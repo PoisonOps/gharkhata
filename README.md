@@ -67,26 +67,7 @@ npm test
 
 ## Deploy to Vercel
 
-### Option A — Vercel CLI
-
-```bash
-npm i -g vercel
-vercel
-```
-
-Follow the prompts. Then add env vars in the Vercel dashboard:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
-
-### Option B — GitHub → Vercel
-
-1. Push this repo to GitHub.
-2. Go to [vercel.com](https://vercel.com) → New Project → import the repo.
-3. Framework preset: **Vite**
-4. Add the two env vars above.
-5. Deploy.
-
----
+open : https://gharkhata.vercel.app
 
 ## First run (onboarding)
 
