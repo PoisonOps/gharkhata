@@ -1,11 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from '../../hooks/useAuth'
-import { useProfile } from '../../hooks/useProfile'
-import { useExpenses } from '../../hooks/useExpenses'
-import { useCategories } from '../../hooks/useCategories'
-import { useRecurring } from '../../hooks/useRecurring'
-import { useSettlements } from '../../hooks/useSettlements'
+import { useApp } from '../../context/AppContext'
 import { computeBalance } from '../../lib/balance'
 import { formatCurrency } from '../../lib/format'
 import { daysLeftInMonth, isDueSoon, nextCycleDate, nextFixedDate, toDateStr } from '../../lib/dates'
@@ -14,7 +9,7 @@ import { ProgressBar } from '../../components/ProgressBar'
 import { MonthPicker } from '../../components/MonthPicker'
 import { Spinner } from '../../components/Spinner'
 import { Avatar } from '../../components/Avatar'
-import type { Expense } from '../../lib/supabase'
+import type { Expense, Category, Profile } from '../../lib/supabase'
 
 export function Dashboard() {
   const now = new Date()
@@ -22,14 +17,19 @@ export function Dashboard() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const navigate = useNavigate()
 
-  const { user } = useAuth()
-  const { profile, partner, household } = useProfile(user?.id)
-  const { expenses, loading } = useExpenses(household?.id, year, month)
-  const { categories } = useCategories(household?.id)
-  const { recurring } = useRecurring(household?.id)
-  const { settlements } = useSettlements(household?.id)
+  const { profile, partner, categories, expenses: ctxExpenses,
+    settlements, recurring, refetchExpenses, loading } = useApp()
+
+  // If month picker changes, fetch that month
+  const handleMonthChange = (y: number, m: number) => {
+    setYear(y); setMonth(m)
+    refetchExpenses(y, m)
+  }
 
   if (loading || !profile) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
+
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
+  const expenses = ctxExpenses
 
   const totalSpent = expenses.reduce((s, e) => s + e.amount, 0)
   const totalBudget = categories.reduce((s, c) => s + (c.monthly_budget ?? 0), 0)
@@ -39,11 +39,8 @@ export function Dashboard() {
   const daysLeft = daysLeftInMonth()
   const safePerDay = hasBudget && remaining > 0 ? remaining / daysLeft : 0
 
-  const balance = profile && partner
-    ? computeBalance(profile.id, partner.id, expenses, settlements)
-    : null
+  const balance = partner ? computeBalance(profile.id, partner.id, expenses, settlements) : null
 
-  // Due this week from recurring
   const dueSoon = recurring.filter((r) => {
     const nextDate = r.due_type === 'cycle'
       ? toDateStr(nextCycleDate(r.last_paid_on, r.cycle_days ?? 30))
@@ -51,12 +48,9 @@ export function Dashboard() {
     return isDueSoon(nextDate, 7)
   })
 
-  // Category breakdown (top 4)
   const catSpend: Record<string, number> = {}
   for (const e of expenses) {
-    if (e.category_id) {
-      catSpend[e.category_id] = (catSpend[e.category_id] ?? 0) + e.amount
-    }
+    if (e.category_id) catSpend[e.category_id] = (catSpend[e.category_id] ?? 0) + e.amount
   }
   const topCats = Object.entries(catSpend)
     .sort(([, a], [, b]) => b - a)
@@ -64,11 +58,8 @@ export function Dashboard() {
     .map(([id, amt]) => ({ cat: categories.find((c) => c.id === id), amt }))
     .filter((x) => x.cat)
 
-  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
-
   return (
     <div className="pb-32 pt-safe">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 pt-4 pb-2">
         <div>
           <p className="text-xs text-zinc-400">Good {getGreeting()},</p>
@@ -77,9 +68,8 @@ export function Dashboard() {
         <Avatar name={profile.display_name} color={profile.color} size={36} />
       </div>
 
-      {/* Month picker */}
       <div className="flex justify-center py-3">
-        <MonthPicker year={year} month={month} onChange={(y, m) => { setYear(y); setMonth(m) }} />
+        <MonthPicker year={year} month={month} onChange={handleMonthChange} />
       </div>
 
       <div className="px-4 space-y-3">
@@ -92,9 +82,7 @@ export function Dashboard() {
                 {formatCurrency(totalSpent)}
               </p>
               {hasBudget && (
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  of {formatCurrency(totalBudget)} budget
-                </p>
+                <p className="text-xs text-zinc-400 mt-0.5">of {formatCurrency(totalBudget)} budget</p>
               )}
             </div>
             {hasBudget && (
@@ -113,12 +101,12 @@ export function Dashboard() {
           )}
         </Card>
 
-        {/* Balance card */}
-        {profile && partner && (
+        {/* Balance */}
+        {partner && (
           <Card className="p-4">
             <div className="flex items-center gap-3">
               <Avatar name={profile.display_name} color={profile.color} size={36} />
-              <div className="flex-1">
+              <div className="flex-1 text-center">
                 {!balance || balance.direction === 'settled' ? (
                   <p className="text-sm font-medium text-good">All settled ✓</p>
                 ) : balance.direction === 'bOwes' ? (
@@ -205,38 +193,29 @@ export function Dashboard() {
   )
 }
 
-function ExpenseRow({
-  expense,
-  categories,
-  profile,
-  partner,
-  onEdit,
-}: {
+function ExpenseRow({ expense, categories, profile, partner, onEdit }: {
   expense: Expense
-  categories: ReturnType<typeof useCategories>['categories']
-  profile: NonNullable<ReturnType<typeof useProfile>['profile']>
-  partner: ReturnType<typeof useProfile>['partner']
+  categories: Category[]
+  profile: Profile
+  partner: Profile | null
   onEdit: () => void
 }) {
   const cat = categories.find((c) => c.id === expense.category_id)
   const payer = expense.paid_by === profile.id ? profile : partner
-  const date = new Date(expense.spent_on)
-  const dateStr = date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+  const dateStr = new Date(expense.spent_on).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 
   return (
-    <div className="flex items-center px-4 py-3 gap-3" onClick={onEdit}>
+    <div className="flex items-center px-4 py-3 gap-3 active:bg-black/5 dark:active:bg-white/5" onClick={onEdit}>
       <div className="w-9 h-9 rounded-control bg-primary-tint dark:bg-primary/20 flex items-center justify-center text-lg flex-shrink-0">
         {cat?.icon ?? '🏷️'}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium dark:text-zinc-200 truncate">{cat?.name ?? 'Uncategorised'}</p>
-        <p className="text-xs text-zinc-400">{expense.note ? expense.note : dateStr}{expense.note ? ` · ${dateStr}` : ''}</p>
+        <p className="text-xs text-zinc-400">{expense.note ? `${expense.note} · ` : ''}{dateStr}</p>
       </div>
       <div className="text-right flex-shrink-0">
         <p className="text-sm font-medium dark:text-zinc-100">{formatCurrency(expense.amount)}</p>
-        {payer && (
-          <p className="text-xs text-zinc-400">{payer.display_name}</p>
-        )}
+        {payer && <p className="text-xs text-zinc-400">{payer.display_name}</p>}
       </div>
     </div>
   )

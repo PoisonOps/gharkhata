@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
-import { useAuth } from '../../hooks/useAuth'
-import { useProfile } from '../../hooks/useProfile'
-import { useCategories } from '../../hooks/useCategories'
+import { useApp } from '../../context/AppContext'
 import { toInputDate } from '../../lib/format'
 import type { SplitType } from '../../lib/supabase'
 import { Spinner } from '../../components/Spinner'
@@ -20,9 +18,7 @@ export function AddExpense() {
   const { id } = useParams<{ id: string }>()
   const isEditing = Boolean(id)
 
-  const { user } = useAuth()
-  const { profile, partner, household } = useProfile(user?.id)
-  const { categories } = useCategories(household?.id)
+  const { profile, partner, household, categories, loading } = useApp()
 
   const [amount, setAmount] = useState('')
   const [categoryId, setCategoryId] = useState<string | null>(null)
@@ -31,13 +27,13 @@ export function AddExpense() {
   const [splitRatio, setSplitRatio] = useState(50)
   const [note, setNote] = useState('')
   const [spentOn, setSpentOn] = useState(toInputDate())
-  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
   const [fetching, setFetching] = useState(isEditing)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (profile) setPaidBy(profile.id)
-  }, [profile])
+    if (profile && !paidBy) setPaidBy(profile.id)
+  }, [profile, paidBy])
 
   useEffect(() => {
     if (!id) return
@@ -57,7 +53,7 @@ export function AddExpense() {
 
   const save = async () => {
     if (!amount || !household || !paidBy) return
-    setLoading(true)
+    setSaving(true)
     setError(null)
 
     const payload = {
@@ -78,7 +74,7 @@ export function AddExpense() {
       ({ error: err } = await supabase.from('expenses').insert(payload))
     }
 
-    if (err) { setError(err.message); setLoading(false); return }
+    if (err) { setError(err.message); setSaving(false); return }
     navigate(-1)
   }
 
@@ -88,11 +84,10 @@ export function AddExpense() {
     navigate(-1)
   }
 
-  if (fetching) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
+  if (fetching || loading || !profile) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
 
   return (
     <div className="min-h-screen bg-surface dark:bg-zinc-950 flex flex-col pt-safe">
-      {/* Header */}
       <div className="flex items-center px-4 h-14 gap-3 border-b border-black/10 dark:border-white/10">
         <button onClick={() => navigate(-1)} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-black/5 dark:hover:bg-white/10">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M19 12H5M12 5l-7 7 7 7" /></svg>
@@ -106,7 +101,6 @@ export function AddExpense() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 pb-24">
-        {/* Amount */}
         <div className="text-center">
           <div className="relative inline-block">
             <span className="absolute left-0 top-1/2 -translate-y-1/2 text-2xl text-zinc-400 -ml-6">₹</span>
@@ -122,7 +116,6 @@ export function AddExpense() {
           </div>
         </div>
 
-        {/* Categories */}
         <div>
           <p className="text-xs font-medium text-zinc-400 mb-2">Category</p>
           <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
@@ -143,8 +136,7 @@ export function AddExpense() {
           </div>
         </div>
 
-        {/* Paid by */}
-        {profile && partner && (
+        {partner && (
           <div>
             <p className="text-xs font-medium text-zinc-400 mb-2">Paid by</p>
             <div className="flex gap-2">
@@ -165,7 +157,6 @@ export function AddExpense() {
           </div>
         )}
 
-        {/* Split */}
         <div>
           <p className="text-xs font-medium text-zinc-400 mb-2">Split</p>
           <div className="flex gap-2">
@@ -186,7 +177,7 @@ export function AddExpense() {
           {splitType === 'custom' && (
             <div className="mt-3">
               <div className="flex justify-between text-xs text-zinc-400 mb-1">
-                <span>{profile?.display_name}: {splitRatio}%</span>
+                <span>{profile.display_name}: {splitRatio}%</span>
                 <span>{partner?.display_name ?? 'Partner'}: {100 - splitRatio}%</span>
               </div>
               <input
@@ -201,7 +192,6 @@ export function AddExpense() {
           )}
         </div>
 
-        {/* Note */}
         <div>
           <p className="text-xs font-medium text-zinc-400 mb-2">Note (optional)</p>
           <input
@@ -213,7 +203,6 @@ export function AddExpense() {
           />
         </div>
 
-        {/* Date */}
         <div>
           <p className="text-xs font-medium text-zinc-400 mb-2">Date</p>
           <input
@@ -230,10 +219,10 @@ export function AddExpense() {
       <div className="fixed bottom-0 left-0 right-0 px-4 pb-6 pt-3 bg-surface/90 dark:bg-zinc-950/90 backdrop-blur border-t border-black/10 dark:border-white/10">
         <button
           onClick={save}
-          disabled={loading || !amount || parseFloat(amount) <= 0}
+          disabled={saving || !amount || parseFloat(amount) <= 0}
           className="w-full h-12 bg-primary text-white rounded-control font-medium disabled:opacity-50 active:scale-[0.99] transition-transform"
         >
-          {loading ? 'Saving…' : isEditing ? 'Save changes' : 'Add expense'}
+          {saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add expense'}
         </button>
       </div>
     </div>

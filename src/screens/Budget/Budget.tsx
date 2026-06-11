@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
-import { useAuth } from '../../hooks/useAuth'
-import { useProfile } from '../../hooks/useProfile'
-import { useExpenses } from '../../hooks/useExpenses'
-import { useCategories } from '../../hooks/useCategories'
+import { useApp } from '../../context/AppContext'
 import { formatCurrency } from '../../lib/format'
 import { Card } from '../../components/Card'
 import { ProgressBar } from '../../components/ProgressBar'
@@ -19,25 +16,23 @@ export function Budget() {
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const { user } = useAuth()
-  const { profile, household } = useProfile(user?.id)
-  const { expenses, loading: expLoading } = useExpenses(household?.id, year, month)
-  const { categories, loading: catLoading, refetch } = useCategories(household?.id)
+  const { categories, expenses: ctxExpenses, refetchExpenses, refetchCategories, loading } = useApp()
 
-  if (expLoading || catLoading || !profile) {
-    return <div className="h-screen flex items-center justify-center"><Spinner /></div>
+  const handleMonthChange = (y: number, m: number) => {
+    setYear(y); setMonth(m)
+    refetchExpenses(y, m)
   }
 
+  if (loading) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
+
   const catSpend: Record<string, number> = {}
-  for (const e of expenses) {
+  for (const e of ctxExpenses) {
     if (e.category_id) catSpend[e.category_id] = (catSpend[e.category_id] ?? 0) + e.amount
   }
 
   const sorted = [...categories].sort((a, b) => {
-    const aHas = a.monthly_budget !== null
-    const bHas = b.monthly_budget !== null
-    if (aHas && !bHas) return -1
-    if (!aHas && bHas) return 1
+    if (a.monthly_budget !== null && b.monthly_budget === null) return -1
+    if (a.monthly_budget === null && b.monthly_budget !== null) return 1
     return a.sort_order - b.sort_order
   })
 
@@ -48,13 +43,13 @@ export function Budget() {
       .from('categories')
       .update({ monthly_budget: isNaN(val) || val <= 0 ? null : val })
       .eq('id', id)
-    await refetch()
+    await refetchCategories()
     setEditingId(null)
     setSaving(false)
   }
 
   const totalBudget = categories.reduce((s, c) => s + (c.monthly_budget ?? 0), 0)
-  const totalSpent = expenses.reduce((s, e) => s + e.amount, 0)
+  const totalSpent = ctxExpenses.reduce((s, e) => s + e.amount, 0)
 
   return (
     <div className="pb-32 pt-safe">
@@ -62,7 +57,7 @@ export function Budget() {
         <h1 className="text-lg font-medium dark:text-zinc-100">Budget</h1>
       </div>
       <div className="flex justify-center py-2">
-        <MonthPicker year={year} month={month} onChange={(y, m) => { setYear(y); setMonth(m) }} />
+        <MonthPicker year={year} month={month} onChange={handleMonthChange} />
       </div>
 
       {totalBudget > 0 && (
@@ -107,13 +102,7 @@ export function Budget() {
                             if (e.key === 'Escape') setEditingId(null)
                           }}
                         />
-                        <button
-                          onClick={() => saveBudget(cat.id)}
-                          disabled={saving}
-                          className="text-xs text-primary font-medium px-1"
-                        >
-                          Save
-                        </button>
+                        <button onClick={() => saveBudget(cat.id)} disabled={saving} className="text-xs text-primary font-medium px-1">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-zinc-400 px-1">✕</button>
                       </div>
                     ) : (
@@ -130,14 +119,14 @@ export function Budget() {
                       <div className="flex justify-between text-xs text-zinc-400 mb-1">
                         <span>{formatCurrency(spent)} spent</span>
                         <span className={pct > 100 ? 'text-over' : pct >= 80 ? 'text-warn' : 'text-good'}>
-                          {formatCurrency(budget - spent)} {pct > 100 ? 'over' : 'left'}
+                          {formatCurrency(Math.abs(budget - spent))} {pct > 100 ? 'over' : 'left'}
                         </span>
                       </div>
                       <ProgressBar pct={pct} height={5} />
                     </>
                   ) : (
                     <p className="text-xs text-zinc-400">
-                      {spent > 0 ? `Spent ${formatCurrency(spent)} (no budget set)` : 'No budget · No spend'}
+                      {spent > 0 ? `${formatCurrency(spent)} spent — no budget set` : 'No budget · No spend'}
                     </p>
                   )}
                 </div>

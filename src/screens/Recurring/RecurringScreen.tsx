@@ -1,9 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '../../lib/supabase'
-import { useAuth } from '../../hooks/useAuth'
-import { useProfile } from '../../hooks/useProfile'
-import { useRecurring } from '../../hooks/useRecurring'
-import { useCategories } from '../../hooks/useCategories'
+import { useApp } from '../../context/AppContext'
 import { formatCurrency, formatDate } from '../../lib/format'
 import { nextCycleDate, nextFixedDate, toDateStr, today } from '../../lib/dates'
 import { Card } from '../../components/Card'
@@ -12,26 +9,20 @@ import { Spinner } from '../../components/Spinner'
 import type { Recurring, DueType } from '../../lib/supabase'
 
 export function RecurringScreen() {
-  const { user } = useAuth()
-  const { profile, household } = useProfile(user?.id)
-  const { recurring, loading, refetch } = useRecurring(household?.id)
-  const { categories } = useCategories(household?.id)
+  const { profile, household, categories, recurring, refetchRecurring, loading } = useApp()
   const [showForm, setShowForm] = useState(false)
   const [editItem, setEditItem] = useState<Recurring | null>(null)
 
   if (loading || !profile) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
 
-  const getNextDate = (r: Recurring) => {
-    if (r.due_type === 'cycle') return toDateStr(nextCycleDate(r.last_paid_on, r.cycle_days ?? 30))
-    return toDateStr(nextFixedDate(r.due_day ?? 1))
-  }
+  const getNextDate = (r: Recurring) =>
+    r.due_type === 'cycle'
+      ? toDateStr(nextCycleDate(r.last_paid_on, r.cycle_days ?? 30))
+      : toDateStr(nextFixedDate(r.due_day ?? 1))
 
-  const sorted = [...recurring].sort((a, b) => {
-    return getNextDate(a).localeCompare(getNextDate(b))
-  })
+  const sorted = [...recurring].sort((a, b) => getNextDate(a).localeCompare(getNextDate(b)))
 
   const markPaid = async (r: Recurring) => {
-    // Create an expense for this
     await supabase.from('expenses').insert({
       household_id: household!.id,
       amount: r.amount,
@@ -41,19 +32,15 @@ export function RecurringScreen() {
       note: r.name,
       spent_on: today(),
     })
-    // Update last_paid_on
     await supabase.from('recurring').update({ last_paid_on: today() }).eq('id', r.id)
-    await refetch()
+    await refetchRecurring()
   }
 
   return (
     <div className="pb-32 pt-safe">
       <div className="flex items-center justify-between px-4 pt-4 pb-4">
         <h1 className="text-lg font-medium dark:text-zinc-100">Recurring</h1>
-        <button
-          onClick={() => { setEditItem(null); setShowForm(true) }}
-          className="text-sm font-medium text-primary"
-        >
+        <button onClick={() => { setEditItem(null); setShowForm(true) }} className="text-sm font-medium text-primary">
           + Add
         </button>
       </div>
@@ -63,7 +50,7 @@ export function RecurringScreen() {
           <EmptyState
             icon="🔄"
             title="No recurring bills"
-            subtitle="Add rent, subscriptions, and regular expenses here."
+            subtitle="Add rent, gas, WiFi and other regular expenses."
             action={{ label: 'Add one', onClick: () => setShowForm(true) }}
           />
         ) : (
@@ -82,32 +69,16 @@ export function RecurringScreen() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium dark:text-zinc-200">{r.name}</p>
                     <p className={`text-xs ${isDue ? 'text-over' : 'text-zinc-400'}`}>
-                      {r.due_type === 'fixed_date'
-                        ? `Due on the ${r.due_day}th`
-                        : `Next ~${formatDate(nextDate)}`}
+                      {r.due_type === 'fixed_date' ? `Due on the ${r.due_day}th` : `Next ~${formatDate(nextDate)}`}
                       {isDue && daysUntil <= 0 ? ' · Overdue' : isDue ? ` · in ${daysUntil}d` : ''}
                     </p>
-                    {r.end_date && (
-                      <p className="text-xs text-zinc-400">
-                        Ends {formatDate(r.end_date)}
-                      </p>
-                    )}
+                    {r.end_date && <p className="text-xs text-zinc-400">Ends {formatDate(r.end_date)}</p>}
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-medium dark:text-zinc-100">{formatCurrency(r.amount)}</p>
                     <div className="flex gap-1 mt-1 justify-end">
-                      <button
-                        onClick={() => markPaid(r)}
-                        className="text-xs px-2 py-0.5 bg-good/10 text-good rounded-full"
-                      >
-                        Paid
-                      </button>
-                      <button
-                        onClick={() => { setEditItem(r); setShowForm(true) }}
-                        className="text-xs px-2 py-0.5 bg-black/5 dark:bg-white/10 text-zinc-500 rounded-full"
-                      >
-                        Edit
-                      </button>
+                      <button onClick={() => markPaid(r)} className="text-xs px-2 py-0.5 bg-good/10 text-good rounded-full">Paid</button>
+                      <button onClick={() => { setEditItem(r); setShowForm(true) }} className="text-xs px-2 py-0.5 bg-black/5 dark:bg-white/10 text-zinc-500 rounded-full">Edit</button>
                     </div>
                   </div>
                 </div>
@@ -123,23 +94,17 @@ export function RecurringScreen() {
           householdId={household!.id}
           categories={categories}
           onClose={() => setShowForm(false)}
-          onSave={() => { setShowForm(false); refetch() }}
+          onSave={() => { setShowForm(false); refetchRecurring() }}
         />
       )}
     </div>
   )
 }
 
-function RecurringForm({
-  item,
-  householdId,
-  categories,
-  onClose,
-  onSave,
-}: {
+function RecurringForm({ item, householdId, categories, onClose, onSave }: {
   item: Recurring | null
   householdId: string
-  categories: ReturnType<typeof useCategories>['categories']
+  categories: ReturnType<typeof useApp>['categories']
   onClose: () => void
   onSave: () => void
 }) {
@@ -167,13 +132,9 @@ function RecurringForm({
       end_date: endDate || null,
       active: true,
     }
-
     let err
-    if (item) {
-      ({ error: err } = await supabase.from('recurring').update(payload).eq('id', item.id))
-    } else {
-      ({ error: err } = await supabase.from('recurring').insert(payload))
-    }
+    if (item) ({ error: err } = await supabase.from('recurring').update(payload).eq('id', item.id))
+    else ({ error: err } = await supabase.from('recurring').insert(payload))
     if (err) { setError(err.message); setLoading(false); return }
     onSave()
   }
@@ -191,114 +152,66 @@ function RecurringForm({
           <h3 className="font-medium dark:text-zinc-100">{item ? 'Edit recurring' : 'Add recurring'}</h3>
           <button onClick={onClose} className="text-zinc-400 text-xl leading-none">✕</button>
         </div>
-
         <div className="space-y-4">
           <div>
             <label className="text-xs text-zinc-400 mb-1 block">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Rent, WiFi, etc."
-              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Rent, WiFi, Gas…"
+              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
-
           <div>
             <label className="text-xs text-zinc-400 mb-1 block">Amount (₹)</label>
-            <input
-              type="number"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder="0"
-              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
+            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0"
+              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
-
           <div>
             <label className="text-xs text-zinc-400 mb-1 block">Category</label>
             <div className="flex gap-2 flex-wrap">
               {categories.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => setCategoryId(c.id === categoryId ? null : c.id)}
-                  className={`text-sm px-2 py-1 rounded-full transition-colors ${
-                    c.id === categoryId ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'
-                  }`}
-                >
+                <button key={c.id} onClick={() => setCategoryId(c.id === categoryId ? null : c.id)}
+                  className={`text-sm px-2 py-1 rounded-full transition-colors ${c.id === categoryId ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'}`}>
                   {c.icon} {c.name}
                 </button>
               ))}
             </div>
           </div>
-
           <div>
-            <label className="text-xs text-zinc-400 mb-1 block">Due type</label>
+            <label className="text-xs text-zinc-400 mb-1 block">Repeats</label>
             <div className="flex gap-2">
-              <button
-                onClick={() => setDueType('fixed_date')}
-                className={`flex-1 h-9 rounded-control text-sm transition-colors ${dueType === 'fixed_date' ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'}`}
-              >
-                Fixed date
+              <button onClick={() => setDueType('fixed_date')}
+                className={`flex-1 h-9 rounded-control text-sm transition-colors ${dueType === 'fixed_date' ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'}`}>
+                Monthly (fixed date)
               </button>
-              <button
-                onClick={() => setDueType('cycle')}
-                className={`flex-1 h-9 rounded-control text-sm transition-colors ${dueType === 'cycle' ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'}`}
-              >
+              <button onClick={() => setDueType('cycle')}
+                className={`flex-1 h-9 rounded-control text-sm transition-colors ${dueType === 'cycle' ? 'bg-primary text-white' : 'bg-black/5 dark:bg-white/10 text-zinc-600 dark:text-zinc-400'}`}>
                 Every N days
               </button>
             </div>
           </div>
-
           {dueType === 'fixed_date' && (
             <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Day of month (1-31)</label>
-              <input
-                type="number"
-                min={1}
-                max={31}
-                value={dueDay}
-                onChange={(e) => setDueDay(e.target.value)}
-                className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
+              <label className="text-xs text-zinc-400 mb-1 block">Day of month</label>
+              <input type="number" min={1} max={31} value={dueDay} onChange={(e) => setDueDay(e.target.value)}
+                className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
           )}
-
           {dueType === 'cycle' && (
             <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Every how many days?</label>
-              <input
-                type="number"
-                min={1}
-                value={cycleDays}
-                onChange={(e) => setCycleDays(e.target.value)}
-                className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
-              />
+              <label className="text-xs text-zinc-400 mb-1 block">Every how many days? (e.g. 45 for gas)</label>
+              <input type="number" min={1} value={cycleDays} onChange={(e) => setCycleDays(e.target.value)}
+                className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30" />
             </div>
           )}
-
           <div>
-            <label className="text-xs text-zinc-400 mb-1 block">End date (optional — for rentals etc)</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30"
-            />
+            <label className="text-xs text-zinc-400 mb-1 block">End date (optional)</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+              className="w-full h-10 px-3 rounded-control border border-black/10 dark:border-white/10 bg-white dark:bg-zinc-800 text-sm dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-primary/30" />
           </div>
-
           {error && <p className="text-sm text-over">{error}</p>}
-
-          <button
-            onClick={save}
-            disabled={loading || !name.trim() || !amount}
-            className="w-full h-12 bg-primary text-white rounded-control font-medium disabled:opacity-50"
-          >
+          <button onClick={save} disabled={loading || !name.trim() || !amount}
+            className="w-full h-12 bg-primary text-white rounded-control font-medium disabled:opacity-50">
             {loading ? 'Saving…' : item ? 'Save changes' : 'Add'}
           </button>
-          {item && (
-            <button onClick={del} className="w-full h-10 text-over text-sm">Delete</button>
-          )}
+          {item && <button onClick={del} className="w-full h-10 text-over text-sm">Delete</button>}
         </div>
       </div>
     </div>
