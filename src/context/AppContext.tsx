@@ -1,23 +1,28 @@
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
+import {
+  createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode,
+} from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { supabase } from '../lib/supabase'
+import { db } from '../lib/localDb'
+import { pullFromCloud, pushToCloud } from '../lib/sync'
 import type { Profile, Household, Category, Expense, Settlement, Recurring } from '../lib/supabase'
 
 interface AppState {
-  profile: Profile | null
+  profile: Profile | null | undefined // undefined = Dexie still initialising
   partner: Profile | null
   household: Household | null
   categories: Category[]
-  // current month expenses cached
   expenses: Expense[]
   settlements: Settlement[]
   recurring: Recurring[]
-  expenseMonth: { year: number; month: number } | null
   loading: boolean
-  refetchProfile: () => Promise<void>
-  refetchCategories: () => Promise<void>
-  refetchExpenses: (year: number, month: number) => Promise<void>
-  refetchSettlements: () => Promise<void>
-  refetchRecurring: () => Promise<void>
+  online: boolean
+  syncing: boolean
+  pendingCount: number
+  refetchExpenses: (year: number, month: number) => void
+  refetchCategories: () => void
+  refetchSettlements: () => void
+  refetchRecurring: () => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -28,142 +33,184 @@ export function useApp() {
   return ctx
 }
 
-interface AppProviderProps {
-  userId: string
-  children: ReactNode
-}
+const EMPTY_PROFILES: Profile[] = []
+const EMPTY_CATEGORIES: Category[] = []
+const EMPTY_EXPENSES: Expense[] = []
+const EMPTY_SETTLEMENTS: Settlement[] = []
+const EMPTY_RECURRING: Recurring[] = []
 
-export function AppProvider({ userId, children }: AppProviderProps) {
-  const [profile, setProfile] = useState<Profile | null>(null)
-  const [partner, setPartner] = useState<Profile | null>(null)
-  const [household, setHousehold] = useState<Household | null>(null)
-  const [categories, setCategories] = useState<Category[]>([])
-  const [expenses, setExpenses] = useState<Expense[]>([])
-  const [settlements, setSettlements] = useState<Settlement[]>([])
-  const [recurring, setRecurring] = useState<Recurring[]>([])
-  const [expenseMonth, setExpenseMonth] = useState<{ year: number; month: number } | null>(null)
-  const [loading, setLoading] = useState(true)
+export function AppProvider({ userId, children }: { userId: string; children: ReactNode }) {
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [online, setOnline] = useState(navigator.onLine)
+  const [syncing, setSyncing] = useState(false)
+  const [bootstrapped, setBootstrapped] = useState(false)
+  const prevHhId = useRef<string | null>(null)
 
-  const fetchProfile = useCallback(async () => {
-    const { data: p } = await supabase.from('profiles').select('*').eq('id', userId).single()
-    if (!p) return
+  // ── Live queries from Dexie ──────────────────────────────────────────────
+  // Auto re-render whenever underlying Dexie data changes (write or sync)
 
-    setProfile(p)
+  const profile = useLiveQuery(() => db.profiles.get(userId), [userId])
+  const hhId = profile?.household_id ?? null
 
-    if (p.household_id) {
-      const [{ data: hh }, { data: members }, { data: cats }] = await Promise.all([
-        supabase.from('households').select('*').eq('id', p.household_id).single(),
-        supabase.from('profiles').select('*').eq('household_id', p.household_id),
-        supabase.from('categories').select('*').eq('household_id', p.household_id).order('sort_order'),
-      ])
-      setHousehold(hh ?? null)
-      setCategories(cats ?? [])
-      const other = (members ?? []).find((m: Profile) => m.id !== userId)
-      setPartner(other ?? null)
+  const allMembers = useLiveQuery(
+    (): Promise<Profile[]> => hhId
+      ? db.profiles.where('household_id').equals(hhId).toArray()
+      : Promise.resolve(EMPTY_PROFILES),
+    [hhId],
+    EMPTY_PROFILES
+  ) as Profile[]
+
+  const partner: Profile | null = allMembers.find((m) => m.id !== userId) ?? null
+
+  const household = useLiveQuery(
+    (): Promise<Household | undefined> => hhId
+      ? db.households.get(hhId)
+      : Promise.resolve(undefined),
+    [hhId]
+  )
+
+  const categories = useLiveQuery(
+    (): Promise<Category[]> => hhId
+      ? db.categories.where('household_id').equals(hhId).sortBy('sort_order')
+      : Promise.resolve(EMPTY_CATEGORIES),
+    [hhId],
+    EMPTY_CATEGORIES
+  ) as Category[]
+
+  const expenses = useLiveQuery(
+    (): Promise<Expense[]> => {
+      if (!hhId) return Promise.resolve(EMPTY_EXPENSES)
+      const from = `${year}-${String(month).padStart(2, '0')}-01`
+      const lastDay = new Date(year, month, 0).getDate()
+      const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+      return db.expenses
+        .where('[household_id+spent_on]')
+        .between([hhId, from], [hhId, to], true, true)
+        .reverse()
+        .toArray()
+    },
+    [hhId, year, month],
+    EMPTY_EXPENSES
+  ) as Expense[]
+
+  const settlements = useLiveQuery(
+    (): Promise<Settlement[]> => hhId
+      ? db.settlements.where('household_id').equals(hhId).toArray()
+          .then((arr) => arr.sort((a, b) => b.settled_on.localeCompare(a.settled_on)))
+      : Promise.resolve(EMPTY_SETTLEMENTS),
+    [hhId],
+    EMPTY_SETTLEMENTS
+  ) as Settlement[]
+
+  const recurring = useLiveQuery(
+    (): Promise<Recurring[]> => hhId
+      ? db.recurring.where('household_id').equals(hhId).filter((r) => r.active).sortBy('name')
+      : Promise.resolve(EMPTY_RECURRING),
+    [hhId],
+    EMPTY_RECURRING
+  ) as Recurring[]
+
+  const pendingCount = (useLiveQuery(
+    (): Promise<number> => db.sync_queue.count(),
+    [],
+    0
+  ) as number | undefined) ?? 0
+
+  // ── Sync logic ───────────────────────────────────────────────────────────
+
+  const doSync = useCallback(async (hId: string) => {
+    if (!navigator.onLine) return
+    setSyncing(true)
+    try {
+      await pushToCloud()
+      await pullFromCloud(hId, userId)
+    } catch (e) {
+      console.error('Sync failed:', e)
+    } finally {
+      setSyncing(false)
     }
   }, [userId])
 
-  const fetchExpenses = useCallback(async (year: number, month: number) => {
-    const hhId = household?.id
-    if (!hhId) return
-    const from = `${year}-${String(month).padStart(2, '0')}-01`
-    const lastDay = new Date(year, month, 0).getDate()
-    const to = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
-    const { data } = await supabase
-      .from('expenses')
-      .select('*')
-      .eq('household_id', hhId)
-      .gte('spent_on', from)
-      .lte('spent_on', to)
-      .order('spent_on', { ascending: false })
-      .order('created_at', { ascending: false })
-    setExpenses(data ?? [])
-    setExpenseMonth({ year, month })
-  }, [household?.id])
-
-  const fetchSettlements = useCallback(async () => {
-    const hhId = household?.id
-    if (!hhId) return
-    const { data } = await supabase
-      .from('settlements')
-      .select('*')
-      .eq('household_id', hhId)
-      .order('settled_on', { ascending: false })
-    setSettlements(data ?? [])
-  }, [household?.id])
-
-  const fetchRecurring = useCallback(async () => {
-    const hhId = household?.id
-    if (!hhId) return
-    const { data } = await supabase
-      .from('recurring')
-      .select('*')
-      .eq('household_id', hhId)
-      .eq('active', true)
-      .order('name')
-    setRecurring(data ?? [])
-  }, [household?.id])
-
-  const fetchCategories = useCallback(async () => {
-    const hhId = household?.id
-    if (!hhId) return
-    const { data } = await supabase
-      .from('categories')
-      .select('*')
-      .eq('household_id', hhId)
-      .order('sort_order')
-    setCategories(data ?? [])
-  }, [household?.id])
-
-  // Boot: load profile + household + categories in one shot
+  // Bootstrap: pull fresh profile from Supabase on mount (handles post-onboarding)
   useEffect(() => {
-    setLoading(true)
-    fetchProfile().finally(() => setLoading(false))
-  }, [fetchProfile])
+    const bootstrap = async () => {
+      if (navigator.onLine) {
+        try {
+          const { data: p } = await supabase.from('profiles').select('*').eq('id', userId).single()
+          if (p) {
+            await db.profiles.put(p)
+            if (p.household_id) await doSync(p.household_id)
+          }
+        } catch (e) {
+          console.error('Bootstrap failed:', e)
+        }
+      }
+      setBootstrapped(true)
+    }
+    bootstrap()
+  }, [userId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Once household is known, load the rest in parallel
+  // Re-sync when household_id becomes available (right after onboarding completes)
   useEffect(() => {
-    if (!household?.id) return
-    const now = new Date()
-    Promise.all([
-      fetchExpenses(now.getFullYear(), now.getMonth() + 1),
-      fetchSettlements(),
-      fetchRecurring(),
-    ])
-  }, [household?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!hhId || hhId === prevHhId.current) return
+    prevHhId.current = hhId
+    if (bootstrapped) doSync(hhId)
+  }, [hhId, bootstrapped, doSync])
 
-  // Realtime: invalidate on any change
+  // Sync when network comes back
   useEffect(() => {
-    const hhId = household?.id
-    if (!hhId) return
+    const handleOnline = () => { setOnline(true); if (hhId) doSync(hhId) }
+    const handleOffline = () => setOnline(false)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [hhId, doSync])
 
-    const channel = supabase
-      .channel('app-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `household_id=eq.${hhId}` },
-        () => { if (expenseMonth) fetchExpenses(expenseMonth.year, expenseMonth.month) })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements', filter: `household_id=eq.${hhId}` },
-        () => fetchSettlements())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recurring', filter: `household_id=eq.${hhId}` },
-        () => fetchRecurring())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'categories', filter: `household_id=eq.${hhId}` },
-        () => fetchCategories())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `household_id=eq.${hhId}` },
-        () => fetchProfile())
-      .subscribe()
+  // Sync when app comes to foreground
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine && hhId) doSync(hhId)
+    }
+    document.addEventListener('visibilitychange', handleVisible)
+    return () => document.removeEventListener('visibilitychange', handleVisible)
+  }, [hhId, doSync])
 
-    return () => { supabase.removeChannel(channel) }
-  }, [household?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  const refetchExpenses = useCallback((y: number, m: number) => {
+    setYear(y)
+    setMonth(m)
+    if (navigator.onLine && hhId) pullFromCloud(hhId, userId, y, m).catch(console.error)
+  }, [hhId, userId])
+
+  const refetchCategories = useCallback(() => {}, [])
+  const refetchSettlements = useCallback(() => {}, [])
+  const refetchRecurring = useCallback(() => {}, [])
+
+  const loading = !bootstrapped && profile === undefined
 
   return (
     <AppContext.Provider value={{
-      profile, partner, household, categories,
-      expenses, settlements, recurring, expenseMonth,
+      profile,
+      partner,
+      household: household ?? null,
+      categories,
+      expenses,
+      settlements,
+      recurring,
       loading,
-      refetchProfile: fetchProfile,
-      refetchCategories: fetchCategories,
-      refetchExpenses: fetchExpenses,
-      refetchSettlements: fetchSettlements,
-      refetchRecurring: fetchRecurring,
+      online,
+      syncing,
+      pendingCount,
+      refetchExpenses,
+      refetchCategories,
+      refetchSettlements,
+      refetchRecurring,
     }}>
       {children}
     </AppContext.Provider>

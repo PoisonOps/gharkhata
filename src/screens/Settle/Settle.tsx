@@ -1,4 +1,4 @@
-import { supabase } from '../../lib/supabase'
+import { createSettlement } from '../../lib/sync'
 import { useApp } from '../../context/AppContext'
 import { computeBalance, totalSpentBy } from '../../lib/balance'
 import { formatCurrency, formatDate } from '../../lib/format'
@@ -9,7 +9,7 @@ import { EmptyState } from '../../components/EmptyState'
 import { Spinner } from '../../components/Spinner'
 
 export function Settle() {
-  const { profile, partner, household, expenses, settlements, refetchSettlements, loading } = useApp()
+  const { profile, partner, household, expenses, settlements, loading } = useApp()
 
   if (loading || !profile) return <div className="h-screen flex items-center justify-center"><Spinner /></div>
 
@@ -20,14 +20,13 @@ export function Settle() {
     const [from, to] = balance.direction === 'bOwes'
       ? [partner.id, profile.id]
       : [profile.id, partner.id]
-    await supabase.from('settlements').insert({
+    await createSettlement({
       household_id: household.id,
       amount: balance.amount,
       from_profile: from,
       to_profile: to,
       settled_on: today(),
     })
-    await refetchSettlements()
   }
 
   const mySpend = totalSpentBy(profile.id, expenses)

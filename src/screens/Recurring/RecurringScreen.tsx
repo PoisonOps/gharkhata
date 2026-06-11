@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { createExpense, createRecurring, updateRecurring, deleteRecurring } from '../../lib/sync'
 import { useApp } from '../../context/AppContext'
 import { formatCurrency, formatDate } from '../../lib/format'
 import { nextCycleDate, nextFixedDate, toDateStr, today } from '../../lib/dates'
@@ -9,7 +9,7 @@ import { Spinner } from '../../components/Spinner'
 import type { Recurring, DueType } from '../../lib/supabase'
 
 export function RecurringScreen() {
-  const { profile, household, categories, recurring, refetchRecurring, loading } = useApp()
+  const { profile, household, categories, recurring, loading } = useApp()
   const [showForm, setShowForm] = useState(false)
   const [editItem, setEditItem] = useState<Recurring | null>(null)
 
@@ -23,17 +23,19 @@ export function RecurringScreen() {
   const sorted = [...recurring].sort((a, b) => getNextDate(a).localeCompare(getNextDate(b)))
 
   const markPaid = async (r: Recurring) => {
-    await supabase.from('expenses').insert({
-      household_id: household!.id,
-      amount: r.amount,
-      category_id: r.category_id,
-      paid_by: profile.id,
-      split_type: 'equal',
-      note: r.name,
-      spent_on: today(),
-    })
-    await supabase.from('recurring').update({ last_paid_on: today() }).eq('id', r.id)
-    await refetchRecurring()
+    await Promise.all([
+      createExpense({
+        household_id: household!.id,
+        amount: r.amount,
+        category_id: r.category_id,
+        paid_by: profile.id,
+        split_type: 'equal',
+        split_ratio: null,
+        note: r.name,
+        spent_on: today(),
+      }),
+      updateRecurring(r.id, { last_paid_on: today() }),
+    ])
   }
 
   return (
@@ -94,7 +96,7 @@ export function RecurringScreen() {
           householdId={household!.id}
           categories={categories}
           onClose={() => setShowForm(false)}
-          onSave={() => { setShowForm(false); refetchRecurring() }}
+          onSave={() => setShowForm(false)}
         />
       )}
     </div>
@@ -129,19 +131,26 @@ function RecurringForm({ item, householdId, categories, onClose, onSave }: {
       due_type: dueType,
       due_day: dueType === 'fixed_date' ? parseInt(dueDay) : null,
       cycle_days: dueType === 'cycle' ? parseInt(cycleDays) : null,
+      last_paid_on: item?.last_paid_on ?? null,
       end_date: endDate || null,
       active: true,
     }
-    let err
-    if (item) ({ error: err } = await supabase.from('recurring').update(payload).eq('id', item.id))
-    else ({ error: err } = await supabase.from('recurring').insert(payload))
-    if (err) { setError(err.message); setLoading(false); return }
-    onSave()
+    try {
+      if (item) {
+        await updateRecurring(item.id, payload)
+      } else {
+        await createRecurring(payload)
+      }
+      onSave()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save')
+      setLoading(false)
+    }
   }
 
   const del = async () => {
     if (!item || !confirm('Delete this recurring item?')) return
-    await supabase.from('recurring').update({ active: false }).eq('id', item.id)
+    await deleteRecurring(item.id)
     onSave()
   }
 

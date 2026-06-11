@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from '../../lib/supabase'
+import { updateCategory } from '../../lib/sync'
 import { useApp } from '../../context/AppContext'
 import { formatCurrency } from '../../lib/format'
 import { Card } from '../../components/Card'
@@ -16,7 +16,7 @@ export function Budget() {
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const { categories, expenses: ctxExpenses, refetchExpenses, refetchCategories, loading } = useApp()
+  const { categories, expenses: ctxExpenses, refetchExpenses, loading } = useApp()
 
   const handleMonthChange = (y: number, m: number) => {
     setYear(y); setMonth(m)
@@ -39,11 +39,7 @@ export function Budget() {
   const saveBudget = async (id: string) => {
     setSaving(true)
     const val = parseFloat(editValue)
-    await supabase
-      .from('categories')
-      .update({ monthly_budget: isNaN(val) || val <= 0 ? null : val })
-      .eq('id', id)
-    await refetchCategories()
+    await updateCategory(id, { monthly_budget: isNaN(val) || val <= 0 ? null : val })
     setEditingId(null)
     setSaving(false)
   }

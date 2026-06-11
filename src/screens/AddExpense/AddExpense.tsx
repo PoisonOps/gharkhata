@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { supabase } from '../../lib/supabase'
+import { db } from '../../lib/localDb'
+import { createExpense, updateExpense, deleteExpense } from '../../lib/sync'
 import { useApp } from '../../context/AppContext'
 import { toInputDate } from '../../lib/format'
 import type { SplitType } from '../../lib/supabase'
@@ -37,7 +38,8 @@ export function AddExpense() {
 
   useEffect(() => {
     if (!id) return
-    supabase.from('expenses').select('*').eq('id', id).single().then(({ data }) => {
+    // Load from local Dexie first (works offline)
+    db.expenses.get(id).then((data) => {
       if (data) {
         setAmount(String(data.amount))
         setCategoryId(data.category_id)
@@ -67,20 +69,22 @@ export function AddExpense() {
       spent_on: spentOn,
     }
 
-    let err
-    if (isEditing && id) {
-      ({ error: err } = await supabase.from('expenses').update(payload).eq('id', id))
-    } else {
-      ({ error: err } = await supabase.from('expenses').insert(payload))
+    try {
+      if (isEditing && id) {
+        await updateExpense(id, payload)
+      } else {
+        await createExpense(payload)
+      }
+      navigate(-1)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save')
+      setSaving(false)
     }
-
-    if (err) { setError(err.message); setSaving(false); return }
-    navigate(-1)
   }
 
   const del = async () => {
     if (!id || !confirm('Delete this expense?')) return
-    await supabase.from('expenses').delete().eq('id', id)
+    await deleteExpense(id)
     navigate(-1)
   }
 
