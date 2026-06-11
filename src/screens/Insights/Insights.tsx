@@ -92,10 +92,10 @@ export function Insights() {
 
   // Cooking vs ordering stat
   const cookingCats = categories.filter((c) =>
-    ['Groceries', 'Vegetables & fruits', 'Dairy'].includes(c.name)
+    ['Groceries & ration'].includes(c.name)
   )
   const orderingCats = categories.filter((c) =>
-    ['Eating out', 'Ordering in'].includes(c.name)
+    ['Cravings'].includes(c.name)
   )
   const cookingSpend = cookingCats.reduce((s, c) => s + (catSpend[c.id] ?? 0), 0)
   const orderingSpend = orderingCats.reduce((s, c) => s + (catSpend[c.id] ?? 0), 0)
@@ -227,14 +227,14 @@ export function Insights() {
             <p className="text-xs font-medium text-zinc-400 uppercase tracking-wide mb-3">Cooking vs ordering</p>
             <div className="flex gap-3">
               <div className="flex-1 text-center p-3 bg-good/10 rounded-control">
-                <p className="text-lg">🥦</p>
+                <p className="text-lg">🛒</p>
                 <p className="text-sm font-medium text-good">{formatCurrency(cookingSpend)}</p>
-                <p className="text-xs text-zinc-400">Home cooked</p>
+                <p className="text-xs text-zinc-400">Groceries & ration</p>
               </div>
               <div className="flex-1 text-center p-3 bg-warn/10 rounded-control">
-                <p className="text-lg">🛵</p>
+                <p className="text-lg">🍕</p>
                 <p className="text-sm font-medium text-warn">{formatCurrency(orderingSpend)}</p>
-                <p className="text-xs text-zinc-400">Ordered / Eating out</p>
+                <p className="text-xs text-zinc-400">Cravings</p>
               </div>
             </div>
           </Card>
