@@ -1,115 +1,105 @@
-# GharKhata
+# GharKhata 🏠
 
-A shared expense and home-budget PWA for two people living together. Tracks who spent what, who owes whom, recurring bills, and shows visual insights. Real-time sync across both phones.
+> Shared home budget PWA for two — track expenses, settle up, recurring bills, and insights. Works fully offline. Syncs when you're back online.
 
----
-
-## Stack
-
-- React 18 + Vite + TypeScript
-- Tailwind CSS
-- Supabase (Postgres + Auth + Realtime)
-- Recharts
-- React Router
-- vite-plugin-pwa (installable, offline-read)
+**Live → [gharkhata.vercel.app](https://gharkhata.vercel.app)**  
+**Built in → 2 days, idea to deployed**
 
 ---
 
-## Setup
+## The Problem
 
-### 1. Create a Supabase project
+Couples share expenses daily but tracking who paid what turns into a messy WhatsApp thread or a passive-aggressive spreadsheet. Existing apps are either too complex (Splitwise, with its bloat) or require both people to be online simultaneously.
 
-1. Go to [supabase.com](https://supabase.com) and create a new project.
-2. Wait for it to provision (~1 min).
+GharKhata is lightweight, offline-first, and designed for exactly two people.
 
-### 2. Run the schema
+---
 
-1. In the Supabase dashboard, go to **SQL Editor**.
-2. Open `supabase/schema.sql` from this repo.
-3. Paste the entire file and click **Run**.
+## How It Works
 
-This creates all tables, indexes, RLS policies, and enables realtime.
+- One person logs an expense on their phone — even with no internet
+- It syncs to the shared account the moment either partner comes online
+- A running balance shows who owes whom at all times
+- Recurring bills auto-log themselves each month
+- Charts show spending patterns over time
 
-### 3. Get your API keys
+---
 
-In the Supabase dashboard:
-- **Settings → API → Project URL** → copy `URL`
-- **Settings → API → Project API keys → anon public** → copy `anon key`
+## Features
 
-### 4. Set environment variables
+- **Offline-first** — log expenses with no connection, full sync on reconnect
+- **Real-time sync** — Supabase Realtime pushes updates instantly when both online
+- **Split tracking** — custom splits, not just 50/50
+- **Recurring bills** — rent, subscriptions, utilities auto-logged
+- **Visual insights** — Recharts spending breakdowns by category and month
+- **PWA** — installable on home screen (Android + iOS), works like a native app
+
+---
+
+## Architecture
+
+**Offline strategy:** IndexedDB (via Dexie) as the local write-ahead store. On reconnect, Dexie syncs pending writes to Supabase. Conflict resolution: last-write-wins (timestamp-based).
+
+```
+User action → Dexie (local, instant)
+                  ↓
+           Supabase sync (on network)
+                  ↓
+           Supabase Realtime → Partner's Dexie
+```
+
+---
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| Frontend | React 18 + Vite + TypeScript |
+| Styling | Tailwind CSS |
+| Offline storage | Dexie (IndexedDB wrapper) |
+| Backend/Auth | Supabase (Postgres + Auth + Realtime) |
+| Charts | Recharts |
+| Router | React Router v6 |
+| PWA | vite-plugin-pwa (Workbox) |
+| Hosting | Vercel |
+
+---
+
+## Running Locally
+
+### 1. Clone and install
 
 ```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-```
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key-here
-```
-
-### 5. Run locally
-
-```bash
+git clone https://github.com/PoisonOps/gharkhata.git
+cd gharkhata
 npm install
+```
+
+### 2. Set up Supabase
+
+1. Create a project at [supabase.com](https://supabase.com)
+2. In the SQL Editor, run `supabase/schema.sql` from this repo
+3. Copy your project URL and anon key
+
+### 3. Configure environment
+
+```bash
+cp .env.example .env.local
+# Add your VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+```
+
+### 4. Run
+
+```bash
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+---
 
-### 6. Run tests
+## Honesty note
 
-```bash
-npm test
-```
+The sync conflict resolution is simple — last write wins. Two people editing the same expense simultaneously can lose data. A real fix would use CRDTs. Good enough for two people in the same house; not production-ready for larger teams.
 
 ---
 
-## Deploy to Vercel
-
-open : https://gharkhata.vercel.app
-
-## First run (onboarding)
-
-1. Sign in with a magic link email.
-2. Name your household (e.g. "Our Flat").
-3. Enter your display name and pick an accent colour.
-4. Share the 6-char join code with your partner, or enter theirs.
-5. Choose categories (defaults are pre-selected).
-6. Optionally set monthly budgets — or skip and fill in later.
-
----
-
-## Project structure
-
-```
-src/
-  lib/          supabase.ts, balance.ts (+tests), dates.ts, format.ts, defaultCategories.ts
-  hooks/        useAuth, useProfile, useExpenses, useCategories, useRecurring, useSettlements
-  components/   Card, Chip, ProgressBar, BottomBar, Fab, Avatar, Spinner, EmptyState, MonthPicker
-  screens/
-    Auth/        AuthScreen (magic-link)
-    Onboarding/  6-step wizard
-    Dashboard/   Home screen
-    AddExpense/  Add/edit expense
-    Budget/      Budget vs actuals
-    Recurring/   Recurring bills
-    Settle/      Settle up + history
-    Insights/    Charts and stats
-  App.tsx, main.tsx, index.css
-supabase/
-  schema.sql    Paste into Supabase SQL editor
-```
-
----
-
-## Balance logic
-
-See `src/lib/balance.ts` and the 13 unit tests in `src/lib/balance.test.ts`.
-
-- `equal` — each person pays half
-- `custom` — payer's share is `split_ratio`%; non-payer owes the rest
-- `mine` — fully the payer's expense; non-payer owes nothing
-- `theirs` — fully attributed to the other person; non-payer owes full amount
-
-Net balance accounts for all expenses and settlements. The Settle screen shows who owes whom and records a settlement that zeroes the balance.
+Built by [Sahil Solankey](https://sahilsolankey.vercel.app) · shipped in 2 days
